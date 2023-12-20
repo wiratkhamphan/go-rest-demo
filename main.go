@@ -1,19 +1,21 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gosimple/slug"
+	_ "github.com/go-sql-driver/mysql"
 )
 
-// Recipe is a struct representing a recipe.
+// Recipe คือโครงสร้างที่แทนสูตรอาหาร
 type Recipe struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
+// recipeStore คือ interface ที่กำหนดวิธีการจัดการกับข้อมูลของ Recipe
 type recipeStore interface {
 	Add(name string, recipe Recipe) error
 	Get(name string) (Recipe, error)
@@ -22,80 +24,143 @@ type recipeStore interface {
 	Remove(name string) error
 }
 
-// MemStore is an in-memory implementation of the recipeStore interface.
-type MemStore struct {
-	recipes map[string]Recipe
+// MySQLStore เป็น implement ของ recipeStore ที่ใช้ MySQL
+type MySQLStore struct {
+	db *sql.DB
 }
 
-// NewMemStore creates a new instance of the in-memory store.
-func NewMemStore() recipeStore {
-	return &MemStore{
-		recipes: make(map[string]Recipe),
+// DBConnection ทำการเชื่อมต่อกับฐานข้อมูล MySQL
+func DBConnection() (*sql.DB, error) {
+	dbDriver := "mysql"
+	dbUser := "root"
+	dbPass := ""
+	dbName := "web_lek"
+
+	db, err := sql.Open(dbDriver, dbUser+":"+dbPass+"@/"+dbName)
+	if err != nil {
+		return nil, err
 	}
-}
 
-// Implement the recipeStore interface methods for MemStore.
-
-func (m *MemStore) Add(name string, recipe Recipe) error {
-	if _, exists := m.recipes[name]; exists {
-		return errors.New("recipe already exists")
+	// ทดสอบการเชื่อมต่อ
+	err = db.Ping()
+	if err != nil {
+		return nil, err
 	}
-	m.recipes[name] = recipe
-	return nil
+
+	return db, nil
 }
 
-func (m *MemStore) Get(name string) (Recipe, error) {
-	recipe, exists := m.recipes[name]
-	if !exists {
-		return Recipe{}, NotFoundErr
+// NewMySQLStore สร้าง instance ใหม่ของ MySQL store
+func NewMySQLStore(db *sql.DB) recipeStore {
+	return &MySQLStore{db: db}
+}
+
+// นิยาม method ของ interface recipeStore สำหรับ MySQLStore
+
+// Add เพิ่ม Recipe เข้าสู่ฐานข้อมูล
+func (m *MySQLStore) Add(name string, recipe Recipe) error {
+	_, err := m.db.Exec("INSERT INTO recipe (name, description) VALUES (?, ?)", name, recipe.Description)
+	return err
+}
+
+// Get ดึงข้อมูล Recipe จากฐานข้อมูล
+func (m *MySQLStore) Get(name string) (Recipe, error) {
+	var recipe Recipe
+	err := m.db.QueryRow("SELECT name, description FROM recipe WHERE name = ?", name).Scan(&recipe.Name, &recipe.Description)
+	if err != nil {
+		return Recipe{}, ErrNotFound
 	}
 	return recipe, nil
 }
 
-func (m *MemStore) List() (map[string]Recipe, error) {
-	return m.recipes, nil
+// List ดึงรายการ Recipe ทั้งหมดจากฐานข้อมูล
+func (m *MySQLStore) List() (map[string]Recipe, error) {
+	rows, err := m.db.Query("SELECT name, description FROM recipe")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	recipes := make(map[string]Recipe)
+	for rows.Next() {
+		var recipe Recipe
+		err := rows.Scan(&recipe.Name, &recipe.Description)
+		if err != nil {
+			return nil, err
+		}
+		recipes[recipe.Name] = recipe
+	}
+
+	return recipes, nil
 }
 
-func (m *MemStore) Update(name string, recipe Recipe) error {
-	if _, exists := m.recipes[name]; !exists {
-		return NotFoundErr
+// Update อัพเดตข้อมูล Recipe ในฐานข้อมูล
+func (m *MySQLStore) Update(name string, recipe Recipe) error {
+	result, err := m.db.Exec("UPDATE recipe SET description = ? WHERE name = ?", recipe.Description, name)
+	if err != nil {
+		return err
 	}
-	m.recipes[name] = recipe
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
 	return nil
 }
 
-func (m *MemStore) Remove(name string) error {
-	if _, exists := m.recipes[name]; !exists {
-		return NotFoundErr
+// Remove ลบ Recipe จากฐานข้อมูล
+func (m *MySQLStore) Remove(name string) error {
+	result, err := m.db.Exec("DELETE FROM recipe WHERE name = ?", name)
+	if err != nil {
+		return err
 	}
-	delete(m.recipes, name)
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
 	return nil
 }
 
-// Define a custom NotFoundErr error.
-var NotFoundErr = errors.New("not found")
+// นิยาม error ที่ custom ชื่อ NotFoundErr
+var ErrNotFound = errors.New("not found")
 
-// RecipesHandler is a handler for recipe-related operations.
+// RecipesHandler เป็น handler สำหรับตัวดำเนินการที่เกี่ยวกับ recipe
 type RecipesHandler struct {
 	store recipeStore
 }
 
-// NewRecipesHandler creates a new instance of the RecipesHandler.
+// NewRecipesHandler สร้าง instance ใหม่ของ RecipesHandler
 func NewRecipesHandler(store recipeStore) *RecipesHandler {
 	return &RecipesHandler{store: store}
 }
 
-// Your existing Gin and route handling code...
-
+// main เป็นฟังก์ชันหลักที่ทำการสร้างเซิร์ฟเวอร์และกำหนด route
 func main() {
-	// Create Gin router
+	// สร้าง Gin router
 	router := gin.Default()
 
-	// Instantiate recipe Handler and provide a data store implementation
-	store := NewMemStore() // Assuming you have a NewMemStore() function
+	// สร้าง MySQL store และให้ implement ข้อมูลของ store
+	db, err := DBConnection()
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	store := NewMySQLStore(db)
 	recipesHandler := NewRecipesHandler(store)
 
-	// Register Routes
+	// ลงทะเบียน Routes
 	router.GET("/", homePage)
 	router.GET("/recipes", recipesHandler.ListRecipes)
 	router.POST("/recipes", recipesHandler.CreateRecipe)
@@ -103,65 +168,83 @@ func main() {
 	router.PUT("/recipes/:id", recipesHandler.UpdateRecipe)
 	router.DELETE("/recipes/:id", recipesHandler.DeleteRecipe)
 
-	// Start the server
+	// เริ่มเซิร์ฟเวอร์
 	router.Run(":8080")
+	if err != nil {
+		panic(err)
+	}
 }
 
-func (h RecipesHandler) CreateRecipe(c *gin.Context) {
-	// Get request body and convert it to Recipe (not recipes.Recipe)
+// homePage คือ handler สำหรับ route หน้าแรก
+func homePage(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"message": "Welcome to the home page"})
+}
+
+// ListRecipes คือ handler สำหรับดึงรายการสูตรอาหารทั้งหมด
+func (h *RecipesHandler) ListRecipes(c *gin.Context) {
+	// เรียกใช้ store เพื่อดึงรายการสูตรอาหาร
+	recipes, err := h.store.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// ส่งรายการสูตรอาหารกลับไป
+	c.JSON(http.StatusOK, recipes)
+}
+
+// CreateRecipe คือ handler สำหรับเพิ่มสูตรอาหารใหม่
+func (h *RecipesHandler) CreateRecipe(c *gin.Context) {
+	// ดึง request body และแปลงเป็นโครงสร้าง Recipe
 	var recipe Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Create a URL-friendly name
-	id := slug.Make(recipe.Name)
-
-	// Add to the store
-	h.store.Add(id, recipe)
-
-	// Return success payload
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
-}
-func (h RecipesHandler) ListRecipes(c *gin.Context) {
-	// Call the store to get the list of recipes
-	r, err := h.store.List()
+	// เพิ่มสูตรอาหารใหม่
+	err := h.store.Add(recipe.Name, recipe)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	// Return the list, JSON encoding is implicit
-	c.JSON(200, r)
+	// ส่งผลลัพธ์สำเร็จกลับ
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
-func (h RecipesHandler) GetRecipe(c *gin.Context) {
-	// Retrieve the URL parameter
+
+// GetRecipe คือ handler สำหรับดึงข้อมูลสูตรอาหารจาก ID
+func (h *RecipesHandler) GetRecipe(c *gin.Context) {
+	// ดึงพารามิเตอร์ URL
 	id := c.Param("id")
 
-	// Get the recipe by ID from the store
+	// ดึงข้อมูลสูตรอาหารจาก store ด้วย ID
 	recipe, err := h.store.Get(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
 	}
 
-	// Return the recipe, JSON encoding is implicit
-	c.JSON(200, recipe)
+	// ส่งข้อมูลสูตรอาหารกลับไป
+	c.JSON(http.StatusOK, recipe)
 }
-func (h RecipesHandler) UpdateRecipe(c *gin.Context) {
-	// Get request body and convert it to Recipe (not recipes.Recipe)
+
+// UpdateRecipe คือ handler สำหรับอัปเดตข้อมูลสูตรอาหาร
+func (h *RecipesHandler) UpdateRecipe(c *gin.Context) {
+	// ดึงพารามิเตอร์ URL
+	id := c.Param("id")
+
+	// ดึง request body และแปลงเป็นโครงสร้าง Recipe
 	var recipe Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Retrieve URL parameter
-	id := c.Param("id")
-
-	// Call the store to update the recipe
+	// เรียกใช้ store เพื่ออัปเดตสูตรอาหาร
 	err := h.store.Update(id, recipe)
 	if err != nil {
-		if err == NotFoundErr {
+		if err == ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
@@ -169,18 +252,19 @@ func (h RecipesHandler) UpdateRecipe(c *gin.Context) {
 		return
 	}
 
-	// Return success payload
+	// ส่งผลลัพธ์สำเร็จกลับ
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
-func (h RecipesHandler) DeleteRecipe(c *gin.Context) {
-	// Retrieve URL parameter
+// DeleteRecipe คือ handler สำหรับลบสูตรอาหาร
+func (h *RecipesHandler) DeleteRecipe(c *gin.Context) {
+	// ดึงพารามิเตอร์ URL
 	id := c.Param("id")
 
-	// Call the store to delete the recipe
+	// เรียกใช้ store เพื่อลบสูตรอาหาร
 	err := h.store.Remove(id)
 	if err != nil {
-		if err == NotFoundErr {
+		if err == ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
@@ -188,10 +272,6 @@ func (h RecipesHandler) DeleteRecipe(c *gin.Context) {
 		return
 	}
 
-	// Return success payload
+	// ส่งผลลัพธ์สำเร็จกลับ
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
-
-}
-func homePage(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "Welcome to the home page"})
 }
