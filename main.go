@@ -135,17 +135,17 @@ func (m *MySQLStore) Remove(name string) error {
 // นิยาม error ที่ custom ชื่อ NotFoundErr
 var ErrNotFound = errors.New("not found")
 
-// RecipesHandler เป็น handler สำหรับตัวดำเนินการที่เกี่ยวกับ recipe
+// // RecipesHandler เป็น handler สำหรับตัวดำเนินการที่เกี่ยวกับ recipe
 type RecipesHandler struct {
 	store recipeStore
 }
 
-// NewRecipesHandler สร้าง instance ใหม่ของ RecipesHandler
+// // NewRecipesHandler สร้าง instance ใหม่ของ RecipesHandler
 func NewRecipesHandler(store recipeStore) *RecipesHandler {
 	return &RecipesHandler{store: store}
 }
 
-// main เป็นฟังก์ชันหลักที่ทำการสร้างเซิร์ฟเวอร์และกำหนด route
+// // main เป็นฟังก์ชันหลักที่ทำการสร้างเซิร์ฟเวอร์และกำหนด route
 func main() {
 	// สร้าง Gin router
 	router := gin.Default()
@@ -169,7 +169,7 @@ func main() {
 	router.DELETE("/recipes/:id", recipesHandler.DeleteRecipe)
 
 	// เริ่มเซิร์ฟเวอร์
-	router.Run(":8080")
+	router.Run(":8081")
 	if err != nil {
 		panic(err)
 	}
